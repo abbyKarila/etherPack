@@ -3,18 +3,6 @@
 <title>GUI</title>
 <style type="text/css">
         h1 {color: #75af9e}
-        h2 {color: #825f41}
-        p {color: #75af9e}
-        .header {background-color: #e6c3a5}
-        .options {background-color: #e6c3a5; float:left}
-        .preview {background-color: #dddddd}
-</style>
-</head>
-<html>
-<head>
-<title>GUI</title>
-<style type="text/css">
-        h1 {color: #75af9e}
         h2 {color: #000000}
         p {color: #000000}
         .header {background-color: #000000}
