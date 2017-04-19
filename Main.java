@@ -1,12 +1,11 @@
+package etherPack0;
+
 import java.io.IOException;
 import java.net.*;
-import java.util.Scanner;
 
-public class Main {
+public class Pack {
 
-	public static void main(String[] args) throws UnknownHostException, SocketException, IOException  {
-		
-		/* SUCCESS!!! */
+	public static void main(String newDestinationIP, String newSourceIP, String newPayload) throws UnknownHostException, SocketException, IOException  {
 		
 		/* packet fields */
 		byte[] payload = 		{ 66, 66, 69, 78, 66, 69, 78, 66, 69, 78 };
@@ -17,14 +16,14 @@ public class Main {
 		String seperator = "[.]+";
 		
 		/* gather inputs */
-		Scanner input = new Scanner(System.in);
+		/*Scanner input = new Scanner(System.in);
 		System.out.println("Destination IP:\n");
 		String newDestinationIP = input.next();
 		System.out.println("Payload:\n");
 		String newPayload = input.next();
 		System.out.println("Source IP:\n");
 		String newSourceIP = input.next();
-		input.close();
+		input.close();*/
 		
 		/* parse into byte arrays */
 		String[] dipTokens = newDestinationIP.split(seperator);
@@ -52,7 +51,7 @@ public class Main {
         DatagramSocket socket = new DatagramSocket();
         socket.send(packet);
 
-        System.out.println("Sent");
+        //System.out.println("Sent");
               
         socket.close();
 	}
