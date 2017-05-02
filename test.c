@@ -1,42 +1,33 @@
-#include <errno.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <linux/if_packet.h>
+#include <net/if.h>
+#include <netinet/ether.h>
 #include <netinet/ip.h>
-#include <netinet/udp.h>
+#include <arpa/inet.h>
 
-// The packet length
+// The minimum ethernet frame size
 #define PCKT_LEN 64
+// 18 free bytes after headers and FCS
+#define PAYLOAD_LEN 18
 
-// Can create separate header file (.h) for all headers' structure
-// The IP header's structure
-struct ipheader {
- unsigned char      iph_ihl:5, iph_ver:4;
- unsigned char      iph_tos;
- unsigned short int iph_len;
- unsigned short int iph_ident;
- unsigned char      iph_flag;
- unsigned short int iph_offset;
- unsigned char      iph_ttl;
- unsigned char      iph_protocol;
- unsigned short int iph_chksum;
- unsigned int       iph_sourceip;
- unsigned int       iph_destip;
-};
-
-// UDP header's structure
+// UDP header structure
 struct udpheader {
  unsigned short int udph_srcport;
  unsigned short int udph_destport;
  unsigned short int udph_len;
  unsigned short int udph_chksum;
  };
-// total udp header length: 8 bytes (=64 bits)
+// total udp header length: 8 bytes
+
+// UDP payload
+struct udppayload {
+ uint8_t octet[PAYLOAD_LEN];
+ };
 
 // RFC:
 //  "The checksum field is the 16 bit one's complement of the one's
@@ -53,93 +44,109 @@ unsigned short calcCheckSum(unsigned short *buf, int nwords) {
 
 int main(int argc, char** argv) {
 
-        if (argc != 5) {
+        if (argc != 6) {
                 printf("Usage: sudo %s <source IPv4 address> <source port> <destination IPv4 address> <destination port>\n", argv[0]);
                 exit(1);
         }
-
-/**** Build IP address and port number. ****/
-
-        int sock;                               // raw socket
-        char buffer[PCKT_LEN];
-		memset(buffer, 0, PCKT_LEN);
 		
-		struct ipheader *headerIP = (struct ipheader *) buffer;
-		struct udpheader *headerUDP = (struct udpheader *) (buffer + sizeof(struct ipheader));
-        struct sockaddr_in dstSockAddr;                                          // struct for address
+		unsigned int mac[6];
+		sscanf(argv[5], "%02x:%02x:%02x:%02x:%02x:%02x",  &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
 
-        dstSockAddr.sin_family = AF_INET;                                        // protocol family (IP)
-        dstSockAddr.sin_port = htons(atoi("9237"));                                      // port number
-        dstSockAddr.sin_addr.s_addr = inet_addr(argv[3]);
-
-		// use standard header structures but assign our own values.
-		headerIP-> iph_ihl 		= 5;
-		headerIP-> iph_ver 		= 4;
-		headerIP-> iph_tos 		= 16; // Low delay
-		headerIP-> iph_len 		= sizeof(struct ipheader) + sizeof(struct udpheader);
-		headerIP-> iph_ident 	= htons(54321);
-		headerIP-> iph_ttl 		= 64; // hops
-		headerIP-> iph_protocol = 17; // UDP
-		headerIP-> iph_sourceip = inet_addr(argv[1]);// Source IP address, can be spoofed
-		headerIP-> iph_destip 	= inet_addr(argv[3]);// The destination IP address
-		 
-		// Fabricate the UDP header. Source port number, redundant
-		headerUDP-> udph_srcport  = htons(atoi(argv[2]));
-		headerUDP-> udph_destport = htons(atoi(argv[4]));// Destination port number
-		headerUDP-> udph_len      = htons(sizeof(struct udpheader));
-		
-		// Calculate the checksum for integrity
-		headerIP-> iph_chksum = calcCheckSum((unsigned short *)buffer, sizeof(struct ipheader) + sizeof(struct udpheader));
-		
 /**** Create raw socket. ****/
 
-        sock = socket(PF_INET, SOCK_RAW, IPPROTO_UDP); // PF_PACKET, ,htons(ETH_P_ALL)
+        int sock = socket(PF_PACKET, SOCK_RAW, IPPROTO_RAW); // htons(ETH_P_ALL)
         if (sock < 0) {
                 printf("Are you running as sudo?\n");
 				perror("socket() error");
                 exit(-1);
         }
-		
-		int i = 1;
-        const int *val = &i;
-		// Inform the kernel do not fill up the packet structure. we will build our own...
-		if(setsockopt(sock, IPPROTO_IP, IP_HDRINCL, val, sizeof(i)) < 0)
-		{
-		perror("setsockopt() error");
-		exit(-1);
-		}
 
         // set send buffer size
         //setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (void*)&size, sizeof(size));
+		
+/**** Define interface for socket address. ****/
 
-/**** Connect. ****/
+		struct sockaddr_ll socket_address;
+		struct ifreq iface;
+		memset(&iface, 0, sizeof(struct ifreq));
+        strncpy(iface.ifr_name, "eth0", IFNAMSIZ-1);
+		if (ioctl(sock, SIOCGIFINDEX, &iface) < 0) { perror("SIOCGIFINDEX"); }
+		socket_address.sll_ifindex = iface.ifr_ifindex;
 
-        if (connect(sock, (struct sockaddr *) &dstSockAddr, sizeof(struct sockaddr_in)) < 0) {
-                printf("Could not connect.\n");
-                printf("ERROR: %s\n", strerror(errno));
-        }
-        else printf("Connected!\n");
-
+/**** Build packet. ****/
+		
+        char buffer[PCKT_LEN];
+		memset(buffer, 0, PCKT_LEN);
+		//memset(buffer + PCKT_LEN - sizeof(MAGIC_NUMBER), MAGIC_NUMBER, PCKT_LEN);
+		
+		struct ether_header *headerETH  = (struct ether_header *) buffer;
+		struct iphdr 		*headerIP   = (struct iphdr *) 		 (buffer + sizeof(struct ether_header));
+		struct udpheader 	*headerUDP  = (struct udpheader *)   (buffer + sizeof(struct ether_header) + sizeof(struct iphdr));
+		struct udppayload 	*payloadUDP = (struct udppayload *)  (buffer + sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct udpheader));
+        
+    /* Ethernet header */
+		/* Source MAC */
+        headerETH-> ether_shost[0] = ((uint8_t *)&iface.ifr_hwaddr.sa_data)[0];
+        headerETH-> ether_shost[1] = ((uint8_t *)&iface.ifr_hwaddr.sa_data)[1];
+        headerETH-> ether_shost[2] = ((uint8_t *)&iface.ifr_hwaddr.sa_data)[2];
+        headerETH-> ether_shost[3] = ((uint8_t *)&iface.ifr_hwaddr.sa_data)[3];
+        headerETH-> ether_shost[4] = ((uint8_t *)&iface.ifr_hwaddr.sa_data)[4];
+        headerETH-> ether_shost[5] = ((uint8_t *)&iface.ifr_hwaddr.sa_data)[5];
+		/* Destination MAC */
+        headerETH-> ether_dhost[0] = mac[0];
+        headerETH-> ether_dhost[1] = mac[1];
+        headerETH-> ether_dhost[2] = mac[2];
+        headerETH-> ether_dhost[3] = mac[3];
+        headerETH-> ether_dhost[4] = mac[4];
+        headerETH-> ether_dhost[5] = mac[5];
+        /* Ethertype */
+        headerETH-> ether_type = htons(ETH_P_IP);
+		
+	/* IP header */
+		headerIP-> ihl 		= 5;
+		headerIP-> version 	= 4;
+		headerIP-> tos 		= 16; // Low delay
+		headerIP-> tot_len 	= htons( sizeof(struct iphdr) + sizeof(struct udpheader) + sizeof(struct udppayload));
+		headerIP-> id 		= htons(54321);
+		headerIP-> ttl 		= 64; // hops
+		headerIP-> protocol = 17; // UDP
+		headerIP-> saddr 	= inet_addr(argv[1]); // IP addresses can be spoofed
+		headerIP-> daddr 	= inet_addr(argv[3]);
+		 
+	/* UDP header */
+		headerUDP-> udph_srcport  = htons(atoi(argv[2]));
+		headerUDP-> udph_destport = htons(atoi(argv[4]));
+		headerUDP-> udph_len      = htons(sizeof(struct udpheader) + sizeof(struct udppayload));
+		
+	/* UDP payload */
+		char b[] = "OSKAR WRITES CODE!";		
+		for (int i=0; i<PAYLOAD_LEN; i++) {
+			payloadUDP-> octet[i] = b[i];
+		}
+		
+	/* Calculate IP checksum */
+		headerIP-> check = calcCheckSum((unsigned short *)buffer, sizeof(struct iphdr) + sizeof(struct udpheader));
+		
+	/* Calculate FCS */
+		
+		
 /**** Send packet. ****/
 
-		printf("Using Source IP: %s port: %u, Target IP: %s port: %u.\n", argv[1], atoi(argv[2]), argv[3], atoi(argv[4]));
-        int bytes;                                              // bytes sent this request
+		//printf("Using Source IP: %s port: %u, Target IP: %s port: %u.\n", argv[1], atoi(argv[2]), argv[3], atoi(argv[4]));
+        int bytes;
 		int count;
-		for(count = 0; count < 20; count++) {
-                bytes = send(sock, buffer, PCKT_LEN, 0);
-                sleep(2);
-                if( bytes < 0) {
+		for( count=0; count<10; count++ ) {
+                bytes = sendto(sock, buffer, PCKT_LEN, 0, (struct sockaddr*)&socket_address, sizeof(struct sockaddr_ll));
+                //sleep(2);
+                if( bytes != PCKT_LEN) {
 					perror("sendto() error");
 					exit(-1);
 				}
 				else {
-					printf("Packet #%u sent.\n", count);
-					sleep(2);
+					//printf("Packet #%u sent.\n", count);
 				}
         }
-		
 		printf("Sent %d packets, %d bytes each.\n", count, bytes);
         close(sock);
-        printf("Socket closed!\n");
 
 }
